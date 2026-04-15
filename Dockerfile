@@ -1,13 +1,11 @@
-FROM python:3.11-slim
+# Usa imagem oficial do Playwright que já tem Chromium + deps instalados
+FROM mcr.microsoft.com/playwright/python:v1.44.0-jammy
 
 WORKDIR /app
 
-# Instala dependências Python primeiro (inclui playwright)
+# Instala dependências Python
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-
-# Playwright instala o Chromium e todas as dependências do sistema automaticamente
-RUN playwright install chromium --with-deps
 
 # Copia código
 COPY . .
