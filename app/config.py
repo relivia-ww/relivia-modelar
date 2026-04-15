@@ -6,10 +6,14 @@ load_dotenv()
 class Config:
     SECRET_KEY = os.environ.get("SECRET_KEY", "dev-secret-inseguro")
     _base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    SQLALCHEMY_DATABASE_URI = os.environ.get(
+    _db_url = os.environ.get(
         "DATABASE_URL",
         f"sqlite:///{os.path.join(_base_dir, 'instance', 'relivia_modelar.db')}"
     )
+    # Railway retorna postgres://, SQLAlchemy precisa de postgresql+psycopg2://
+    if _db_url.startswith("postgres://"):
+        _db_url = _db_url.replace("postgres://", "postgresql+psycopg2://", 1)
+    SQLALCHEMY_DATABASE_URI = _db_url
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
     CELERY_BROKER_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")

@@ -18,6 +18,11 @@ def create_app(env_name: str = "default") -> Flask:
     db.init_app(app)
     login_manager.init_app(app)
 
+    # Health check (Railway)
+    @app.route("/health")
+    def health():
+        return {"status": "ok"}, 200
+
     # Blueprints
     from .routes.auth import auth_bp
     from .routes.onboarding import onboarding_bp
