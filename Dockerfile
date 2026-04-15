@@ -7,7 +7,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copia código
+# Cache bust — força Railway a recopiar o código
+ARG CACHEBUST=4
 COPY . .
 
 # Cria diretório de runs
