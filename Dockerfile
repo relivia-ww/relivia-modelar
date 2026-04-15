@@ -18,5 +18,5 @@ RUN mkdir -p /app/runs
 
 EXPOSE 5050
 
-# IMPORTANTE: gunicorn garante 0.0.0.0 — NÃO usar python run.py (escuta 127.0.0.1)
-CMD ["sh", "-c", "gunicorn 'app:create_app()' --bind 0.0.0.0:${PORT:-5050} --workers 2 --timeout 120"]
+# SERVICE_TYPE=worker → Celery | qualquer outro → gunicorn web
+CMD ["sh", "-c", "if [ \"$SERVICE_TYPE\" = \"worker\" ]; then celery -A worker.celery_app worker --loglevel=info --concurrency=1; else gunicorn 'app:create_app()' --bind 0.0.0.0:${PORT:-5050} --workers 2 --timeout 120; fi"]
