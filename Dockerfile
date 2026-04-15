@@ -1,8 +1,8 @@
 # Usa imagem oficial do Playwright que já tem Chromium + deps instalados
-FROM mcr.microsoft.com/playwright/python:v1.44.0-jammy
+FROM mcr.microsoft.com/playwright/python:v1.58.0-jammy
 
-# Cache bust: 20260415-v7
-ARG CACHEBUST=20260415-v7
+# Cache bust: 20260415-v8
+ARG CACHEBUST=20260415-v8
 
 WORKDIR /app
 
