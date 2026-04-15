@@ -5,10 +5,9 @@ WORKDIR /app
 
 # Instala dependências Python
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt gunicorn
 
-# Cache bust — força Railway a recopiar o código
-ARG CACHEBUST=4
+# Copia código
 COPY . .
 
 # Cria diretório de runs
@@ -16,4 +15,5 @@ RUN mkdir -p /app/runs
 
 EXPOSE 5050
 
-CMD ["python", "run.py"]
+# gunicorn garante host 0.0.0.0 independente do run.py
+CMD gunicorn "app:create_app()" --bind 0.0.0.0:${PORT:-5050} --workers 2 --timeout 120
