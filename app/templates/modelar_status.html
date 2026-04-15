@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}Clonando… — Relívia Modelar{% endblock %}
+
+{% block content %}
+<div class="container" style="max-width:560px">
+  <div class="card" style="text-align:center;padding:48px 32px">
+    <div style="font-size:48px;margin-bottom:16px" id="status-icon">
+      {% if job.status == 'done' or job.status == 'published' %}✅
+      {% elif job.status == 'error' %}❌
+      {% else %}⏳{% endif %}
+    </div>
+
+    <div style="font-weight:800;font-size:18px;margin-bottom:8px" id="status-title">
+      {% if job.status == 'done' or job.status == 'published' %}Página pronta!
+      {% elif job.status == 'error' %}Erro na clonagem
+      {% elif job.status == 'running' %}Clonando…
+      {% else %}Na fila…{% endif %}
+    </div>
+
+    <div style="color:var(--muted);font-size:13px;margin-bottom:24px" id="status-msg">
+      {{ job.progress_msg or '' }}
+    </div>
+
+    <!-- Progress bar -->
+    <div style="background:var(--bg);border-radius:8px;overflow:hidden;height:6px;margin-bottom:32px">
+      <div id="progress-bar" style="height:100%;background:var(--blue);transition:width .5s;width:
+        {% if job.status == 'queued' %}5%
+        {% elif job.status == 'running' %}50%
+        {% elif job.status in ('done','published') %}100%
+        {% else %}100%{% endif %}
+      ;background:{% if job.status == 'error' %}var(--red){% else %}var(--blue){% endif %}"></div>
+    </div>
+
+    <div id="action-btns">
+      {% if job.status in ('done', 'published') %}
+      <a href="{{ url_for('editor.editor', job_id=job.id) }}" class="btn btn-primary" style="margin-right:8px">Abrir no Editor →</a>
+      <a href="{{ url_for('modelar.dashboard') }}" class="btn btn-secondary">Dashboard</a>
+      {% elif job.status == 'error' %}
+      <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:14px;margin-bottom:20px;font-size:13px;color:#991b1b;text-align:left">{{ job.error_msg or 'Erro desconhecido' }}</div>
+      <a href="{{ url_for('modelar.new') }}" class="btn btn-primary" style="margin-right:8px">Tentar novamente</a>
+      <a href="{{ url_for('modelar.dashboard') }}" class="btn btn-secondary">Dashboard</a>
+      {% else %}
+      <div style="font-size:12px;color:var(--muted)">Atualizando a cada 4 segundos…</div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const JOB_ID = "{{ job.id }}";
+const FINAL = {{ 'true' if job.status in ('done','published','error') else 'false' }};
+
+if (!FINAL) {
+  const poller = setInterval(async () => {
+    try {
+      const r = await fetch(`/modelar/${JOB_ID}/status.json`);
+      const d = await r.json();
+
+      document.getElementById('status-msg').textContent = d.progress_msg || '';
+
+      if (d.status === 'done' || d.status === 'published') {
+        clearInterval(poller);
+        document.getElementById('status-icon').textContent = '✅';
+        document.getElementById('status-title').textContent = 'Página pronta!';
+        document.getElementById('progress-bar').style.width = '100%';
+        document.getElementById('action-btns').innerHTML =
+          `<a href="/editor/${JOB_ID}" class="btn btn-primary" style="margin-right:8px">Abrir no Editor →</a>
+           <a href="/dashboard" class="btn btn-secondary">Dashboard</a>`;
+      } else if (d.status === 'error') {
+        clearInterval(poller);
+        document.getElementById('status-icon').textContent = '❌';
+        document.getElementById('status-title').textContent = 'Erro na clonagem';
+        document.getElementById('progress-bar').style.background = 'var(--red)';
+        document.getElementById('progress-bar').style.width = '100%';
+        document.getElementById('action-btns').innerHTML =
+          `<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:14px;margin-bottom:16px;font-size:13px;color:#991b1b;text-align:left">${d.error_msg || 'Erro desconhecido'}</div>
+           <a href="/modelar" class="btn btn-primary" style="margin-right:8px">Tentar novamente</a>
+           <a href="/dashboard" class="btn btn-secondary">Dashboard</a>`;
+      } else if (d.status === 'running') {
+        document.getElementById('status-icon').textContent = '🔄';
+        document.getElementById('progress-bar').style.width = '50%';
+      }
+    } catch(e) { /* ignora erros de rede */ }
+  }, 4000);
+}
+</script>
+{% endblock %}

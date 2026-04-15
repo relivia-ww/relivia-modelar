@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block title %}Integrações — Relívia Modelar{% endblock %}
+
+{% block content %}
+<div class="container" style="max-width:680px">
+  <h1 style="font-size:20px;font-weight:800;margin-bottom:4px">Integrações</h1>
+  <p style="color:var(--muted);font-size:14px;margin-bottom:24px">Configure GitHub e Vercel para publicar suas páginas com 1 clique.</p>
+
+  <form method="POST">
+    <!-- GitHub -->
+    <div class="card">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+        <div>
+          <div class="card-title">GitHub</div>
+          <div class="card-sub">Repositório onde as páginas serão commitadas</div>
+        </div>
+        {% if integration.github_configured %}
+        <span class="badge badge-done" style="margin-left:auto">✅ Configurado</span>
+        {% endif %}
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Personal Access Token</label>
+        <input type="password" name="github_token" class="form-input" placeholder="ghp_••••••••••••••••"
+          value="{{ '••••••••••••••••' if integration.github_token_enc else '' }}">
+        <div class="form-hint">Precisa de permissão <code>repo</code>. <a href="https://github.com/settings/tokens/new" target="_blank">Criar token →</a></div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Repositório</label>
+        <input type="text" name="github_repo" class="form-input" placeholder="usuario/meu-repositorio"
+          value="{{ integration.github_repo or '' }}">
+      </div>
+      <div style="display:flex;gap:12px">
+        <div class="form-group" style="flex:1">
+          <label class="form-label">Branch</label>
+          <input type="text" name="github_branch" class="form-input" placeholder="main"
+            value="{{ integration.github_branch or 'main' }}">
+        </div>
+      </div>
+      <button type="button" onclick="testGitHub()" class="btn btn-secondary btn-sm" id="btn-test-gh">Testar conexão</button>
+      <span id="gh-test-result" style="margin-left:10px;font-size:13px"></span>
+    </div>
+
+    <!-- Vercel -->
+    <div class="card">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M24 22.525H0l12-21.05 12 21.05z"/></svg>
+        <div>
+          <div class="card-title">Vercel</div>
+          <div class="card-sub">Para deploy automático após o commit</div>
+        </div>
+        {% if integration.vercel_configured %}
+        <span class="badge badge-done" style="margin-left:auto">✅ Configurado</span>
+        {% endif %}
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Access Token</label>
+        <input type="password" name="vercel_token" class="form-input" placeholder="••••••••••••••••"
+          value="{{ '••••••••••••••••' if integration.vercel_token_enc else '' }}">
+        <div class="form-hint"><a href="https://vercel.com/account/tokens" target="_blank">Criar token →</a></div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Project ID</label>
+        <input type="text" name="vercel_project_id" class="form-input" placeholder="prj_xxxxxxxxxxxx"
+          value="{{ integration.vercel_project_id or '' }}">
+        <div class="form-hint">Encontre em: Project → Settings → General → Project ID</div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Domínio publicado <span style="font-weight:400;color:var(--muted)">(opcional)</span></label>
+        <input type="text" name="vercel_domain" class="form-input" placeholder="meusite.vercel.app"
+          value="{{ integration.vercel_domain or '' }}">
+        <div class="form-hint">Usado para resolver assets no editor (sem https://)</div>
+      </div>
+      <button type="button" onclick="testVercel()" class="btn btn-secondary btn-sm" id="btn-test-vc">Testar conexão</button>
+      <span id="vc-test-result" style="margin-left:10px;font-size:13px"></span>
+    </div>
+
+    <div style="display:flex;gap:12px">
+      <button type="submit" class="btn btn-primary">Salvar integrações</button>
+      <a href="{{ url_for('modelar.dashboard') }}" class="btn btn-secondary">Cancelar</a>
+    </div>
+  </form>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function testGitHub() {
+  const btn = document.getElementById('btn-test-gh');
+  const result = document.getElementById('gh-test-result');
+  btn.disabled = true; btn.textContent = 'Testando...';
+  result.textContent = '';
+  try {
+    const r = await fetch('/onboarding/test-github', { method: 'POST' });
+    const d = await r.json();
+    result.textContent = d.ok ? '✅ ' + d.message : '❌ ' + d.error;
+    result.style.color = d.ok ? '#166534' : '#991b1b';
+  } catch(e) {
+    result.textContent = '❌ Erro de rede';
+    result.style.color = '#991b1b';
+  } finally {
+    btn.disabled = false; btn.textContent = 'Testar conexão';
+  }
+}
+
+async function testVercel() {
+  const btn = document.getElementById('btn-test-vc');
+  const result = document.getElementById('vc-test-result');
+  btn.disabled = true; btn.textContent = 'Testando...';
+  result.textContent = '';
+  try {
+    const r = await fetch('/onboarding/test-vercel', { method: 'POST' });
+    const d = await r.json();
+    result.textContent = d.ok ? '✅ ' + d.message : '❌ ' + d.error;
+    result.style.color = d.ok ? '#166534' : '#991b1b';
+  } catch(e) {
+    result.textContent = '❌ Erro de rede';
+    result.style.color = '#991b1b';
+  } finally {
+    btn.disabled = false; btn.textContent = 'Testar conexão';
+  }
+}
+</script>
+{% endblock %}

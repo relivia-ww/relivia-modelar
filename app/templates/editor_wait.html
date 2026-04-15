@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}Aguardando… — Relívia Modelar{% endblock %}
+{% block content %}
+<div class="container" style="max-width:480px;text-align:center;padding-top:80px">
+  <div style="font-size:48px;margin-bottom:16px">⏳</div>
+  <div style="font-weight:800;font-size:18px;margin-bottom:8px">Aguardando clonagem</div>
+  <div style="color:var(--muted);font-size:14px;margin-bottom:24px">{{ job.progress_msg or 'Processando...' }}</div>
+  <a href="{{ url_for('modelar.status', job_id=job.id) }}" class="btn btn-primary">Ver progresso</a>
+</div>
+{% endblock %}

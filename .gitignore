@@ -1,0 +1,8 @@
+.env
+instance/
+runs/
+__pycache__/
+*.pyc
+*.pyo
+.celery/
+celerybeat-schedule

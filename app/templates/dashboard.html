@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — Relívia Modelar{% endblock %}
+
+{% block content %}
+<div class="container">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px">
+    <div>
+      <h1 style="font-size:20px;font-weight:800;margin-bottom:2px">Suas páginas</h1>
+      <p style="color:var(--muted);font-size:13px">{{ jobs|length }} página{{ 's' if jobs|length != 1 }}</p>
+    </div>
+    <a href="{{ url_for('modelar.new') }}" class="btn btn-primary">+ Nova página</a>
+  </div>
+
+  {% if not integration or not integration.github_configured %}
+  <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:16px 20px;margin-bottom:20px;display:flex;align-items:center;justify-content:space-between;gap:16px">
+    <div>
+      <strong>Configure suas integrações</strong>
+      <div style="font-size:13px;color:var(--muted);margin-top:2px">Adicione seu GitHub e Vercel para publicar páginas com 1 clique.</div>
+    </div>
+    <a href="{{ url_for('onboarding.setup') }}" class="btn btn-secondary btn-sm">Configurar →</a>
+  </div>
+  {% endif %}
+
+  {% if jobs %}
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px">
+    {% for job in jobs %}
+    <div class="card" style="padding:20px">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:12px">
+        <div>
+          <div style="font-weight:700;font-size:14px;margin-bottom:2px">{{ job.nome_pasta or 'sem nome' }}</div>
+          <div style="font-size:11px;color:var(--muted);word-break:break-all">{{ job.url[:50] }}{% if job.url|length > 50 %}…{% endif %}</div>
+        </div>
+        <span class="badge badge-{{ job.status }}">{{ job.status }}</span>
+      </div>
+
+      <div style="font-size:12px;color:var(--muted);margin-bottom:14px">
+        {% if job.page_type == 'advertorial' %}📰 Advertorial{% else %}🛒 Página de Produto{% endif %}
+        · {{ job.images_count }} imagens
+        · {{ job.created_at.strftime('%d/%m/%Y') if job.created_at }}
+      </div>
+
+      {% if job.progress_msg and job.status in ('queued', 'running', 'error') %}
+      <div style="font-size:12px;color:{% if job.status == 'error' %}var(--red){% else %}var(--muted){% endif %};margin-bottom:12px;padding:8px 10px;background:var(--bg);border-radius:6px">
+        {{ job.progress_msg }}
+      </div>
+      {% endif %}
+
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        {% if job.status in ('done', 'published') %}
+        <a href="{{ url_for('editor.editor', job_id=job.id) }}" class="btn btn-primary btn-sm">Editar</a>
+        {% endif %}
+        {% if job.status in ('queued', 'running') %}
+        <a href="{{ url_for('modelar.status', job_id=job.id) }}" class="btn btn-secondary btn-sm">Ver progresso</a>
+        {% endif %}
+        {% if job.published_url %}
+        <a href="{{ job.published_url }}" target="_blank" class="btn btn-secondary btn-sm">Ver publicado ↗</a>
+        {% endif %}
+        <form method="POST" action="{{ url_for('modelar.delete', job_id=job.id) }}" style="display:inline" onsubmit="return confirm('Remover este job?')">
+          <button type="submit" class="btn btn-danger btn-sm">Remover</button>
+        </form>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+
+  {% else %}
+  <div class="card" style="text-align:center;padding:60px 24px">
+    <div style="font-size:40px;margin-bottom:16px">🌐</div>
+    <div style="font-weight:700;font-size:16px;margin-bottom:8px">Nenhuma página ainda</div>
+    <div style="color:var(--muted);font-size:14px;margin-bottom:24px">Cole uma URL e clone qualquer landing page em segundos.</div>
+    <a href="{{ url_for('modelar.new') }}" class="btn btn-primary">Clonar primeira página</a>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}
