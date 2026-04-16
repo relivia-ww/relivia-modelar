@@ -36,8 +36,35 @@ def create_app(env_name: str = "default") -> Flask:
     app.register_blueprint(editor_bp)
     app.register_blueprint(publicar_bp)
 
-    # Cria tabelas na primeira execução
+    # Cria tabelas na primeira execução + migração de colunas faltando
     with app.app_context():
         db.create_all()
+        _run_migrations(db)
 
     return app
+
+
+def _run_migrations(db):
+    """Adiciona colunas que podem estar faltando no banco existente."""
+    from sqlalchemy import text, inspect
+    engine = db.engine
+    inspector = inspect(engine)
+    cols = {c["name"] for c in inspector.get_columns("clone_jobs")}
+
+    migrations = [
+        ("out_dir",    "ALTER TABLE clone_jobs ADD COLUMN out_dir TEXT"),
+        ("html_path",  "ALTER TABLE clone_jobs ADD COLUMN html_path TEXT"),
+        ("error_msg",  "ALTER TABLE clone_jobs ADD COLUMN error_msg TEXT"),
+        ("commit_url", "ALTER TABLE clone_jobs ADD COLUMN commit_url TEXT"),
+        ("published_url", "ALTER TABLE clone_jobs ADD COLUMN published_url TEXT"),
+        ("images_count", "ALTER TABLE clone_jobs ADD COLUMN images_count INTEGER DEFAULT 0"),
+    ]
+
+    with engine.connect() as conn:
+        for col, sql in migrations:
+            if col not in cols:
+                try:
+                    conn.execute(text(sql))
+                    conn.commit()
+                except Exception:
+                    pass
