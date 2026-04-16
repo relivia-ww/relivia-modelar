@@ -34,6 +34,7 @@
     <div id="action-btns">
       {% if job.status in ('done', 'published') %}
       <a href="{{ url_for('editor.editor', job_id=job.id) }}" class="btn btn-primary" style="margin-right:8px">Abrir no Editor →</a>
+      <a href="{{ url_for('modelar.download', job_id=job.id) }}" class="btn btn-secondary" style="margin-right:8px">⬇ Baixar HTML</a>
       <a href="{{ url_for('modelar.dashboard') }}" class="btn btn-secondary">Dashboard</a>
       {% elif job.status == 'error' %}
       <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:14px;margin-bottom:20px;font-size:13px;color:#991b1b;text-align:left">{{ job.error_msg or 'Erro desconhecido' }}</div>
@@ -67,6 +68,7 @@ if (!FINAL) {
         document.getElementById('progress-bar').style.width = '100%';
         document.getElementById('action-btns').innerHTML =
           `<a href="/editor/${JOB_ID}" class="btn btn-primary" style="margin-right:8px">Abrir no Editor →</a>
+           <a href="/modelar/${JOB_ID}/download" class="btn btn-secondary" style="margin-right:8px">⬇ Baixar HTML</a>
            <a href="/dashboard" class="btn btn-secondary">Dashboard</a>`;
       } else if (d.status === 'error') {
         clearInterval(poller);
