@@ -373,13 +373,14 @@ def _translate_to_ptbr(html: str, url: str) -> str:
     if not api_key:
         return html
 
-    import anthropic
-    client = anthropic.Anthropic(api_key=api_key)
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=api_key)
 
-    # Trunca HTML para não estourar contexto
-    html_input = html[:40000] if len(html) > 40000 else html
+        # Trunca HTML para não estourar contexto
+        html_input = html[:40000] if len(html) > 40000 else html
 
-    prompt = f"""Você receberá o HTML de uma landing page em inglês (ou outro idioma).
+        prompt = f"""Você receberá o HTML de uma landing page em inglês (ou outro idioma).
 
 Sua tarefa: traduzir APENAS os textos visíveis para Português Brasileiro natural e persuasivo.
 
@@ -405,21 +406,25 @@ Retorne APENAS o HTML com os textos traduzidos. Sem explicações. Sem markdown.
 HTML:
 {html_input}"""
 
-    response = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=8000,
-        messages=[{"role": "user", "content": prompt}]
-    )
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=8000,
+            messages=[{"role": "user", "content": prompt}]
+        )
 
-    translated = response.content[0].text.strip()
+        translated = response.content[0].text.strip()
 
-    # Remove markdown se vier com ```
-    if "```html" in translated:
-        translated = translated.split("```html")[1].split("```")[0].strip()
-    elif "```" in translated:
-        translated = translated.split("```")[1].split("```")[0].strip()
+        # Remove markdown se vier com ```
+        if "```html" in translated:
+            translated = translated.split("```html")[1].split("```")[0].strip()
+        elif "```" in translated:
+            translated = translated.split("```")[1].split("```")[0].strip()
 
-    return translated
+        return translated
+
+    except Exception:
+        # Sem crédito ou erro na API — retorna HTML sem traduzir
+        return html
 
 
 # ─────────────────────────────────────────────────────────────
