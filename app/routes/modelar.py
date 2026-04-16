@@ -1,6 +1,8 @@
+import os
 import re
-from flask import Blueprint, render_template, redirect, url_for, request, jsonify, flash
+from flask import Blueprint, render_template, redirect, url_for, request, jsonify, flash, send_file
 from flask_login import login_required, current_user
+from pathlib import Path
 from ..extensions import db
 from ..models.clone_job import CloneJob
 
@@ -71,6 +73,23 @@ def status(job_id):
 def status_json(job_id):
     job = CloneJob.query.filter_by(id=job_id, user_id=current_user.id).first_or_404()
     return jsonify(job.to_dict())
+
+
+@modelar_bp.route("/modelar/<job_id>/download")
+@login_required
+def download(job_id):
+    job = CloneJob.query.filter_by(id=job_id, user_id=current_user.id).first_or_404()
+    runs_base = Path(os.environ.get("AGENTE_CLONE_RUNS_BASE", "/app/runs"))
+    html_path = runs_base / job_id / "index.html"
+    if not html_path.exists():
+        flash("Arquivo não encontrado.", "error")
+        return redirect(url_for("modelar.status", job_id=job_id))
+    return send_file(
+        html_path,
+        as_attachment=True,
+        download_name=f"{job.nome_pasta}.html",
+        mimetype="text/html",
+    )
 
 
 @modelar_bp.route("/modelar/<job_id>/delete", methods=["POST"])
