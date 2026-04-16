@@ -1,13 +1,25 @@
 """
-Celery tasks — clonagem de landing pages via Crawl4AI.
-Zero dependência de scripts locais. Roda 100% em cloud.
+Celery tasks — clonagem de landing pages.
+Lógica: clonar igual, sem recriar. Só substituições cirúrgicas.
+
+Fluxo:
+1. Crawl4AI captura HTML completo da página
+2. CSS externo → embed inline no <head>
+3. Imagens:
+   a. URLs relativas → absolutas
+   b. Testa se carrega de outro domínio (hotlink check)
+   c. Se bloqueada → converte para base64 inline
+   d. Se livre → mantém URL absoluta
+4. Substitui textos: produto, marca, links CTA, pixel
+5. Traduz para PT-BR via Claude (só os textos, sem tocar em HTML/CSS)
+6. Salva index.html autossuficiente
 """
 import os
 import re
 import json
 import base64
 import asyncio
-import shutil
+import mimetypes
 import requests
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
@@ -23,6 +35,20 @@ _engine = create_engine(
     connect_args={"check_same_thread": False} if "sqlite" in os.environ.get("DATABASE_URL", "sqlite") else {},
 )
 
+# Domínios de tracking/analytics — ignorar imagens deles
+SKIP_DOMAINS = {
+    "google-analytics.com", "googletagmanager.com", "doubleclick.net",
+    "facebook.com", "facebook.net", "fbcdn.net", "hotjar.com",
+    "clarity.ms", "tiktok.com", "segment.com", "mixpanel.com",
+    "google.com/ads", "googlesyndication.com",
+}
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
+}
+
 
 def _update_job(job_id: str, **kwargs):
     sets = ", ".join(f"{k} = :{k}" for k in kwargs)
@@ -36,18 +62,19 @@ def _slug(text_: str) -> str:
     return re.sub(r"[^a-z0-9-]", "-", text_.lower()).strip("-")[:40]
 
 
+# ─────────────────────────────────────────────────────────────
+# PASSO 1: Capturar HTML completo via Crawl4AI
+# ─────────────────────────────────────────────────────────────
+
 async def _scrape_page(url: str) -> dict:
     """
-    Abre a URL com Crawl4AI (Playwright/Chromium headless).
-    Retorna: html, screenshot (base64), lista de URLs de imagens.
+    Captura o HTML completo da página com Crawl4AI (Playwright headless).
+    Retorna o HTML raw, screenshot e lista de imagens encontradas.
     """
     from crawl4ai import AsyncWebCrawler
     from crawl4ai.extraction_strategy import NoExtractionStrategy
 
-    async with AsyncWebCrawler(
-        headless=True,
-        verbose=False,
-    ) as crawler:
+    async with AsyncWebCrawler(headless=True, verbose=False) as crawler:
         result = await crawler.arun(
             url=url,
             screenshot=True,
@@ -61,18 +88,16 @@ async def _scrape_page(url: str) -> dict:
     if not result.success:
         raise RuntimeError(f"Crawl4AI falhou: {result.error_message}")
 
-    # Coleta URLs de imagens do HTML + media dict
+    # Coleta URLs de imagens
     image_urls = []
     seen = set()
 
-    # Do media dict do Crawl4AI
     for img in result.media.get("images", []):
         src = img.get("src", "")
         if src and src not in seen:
             seen.add(src)
             image_urls.append(src)
 
-    # Fallback: extrai <img src> do HTML com regex
     for src in re.findall(r'<img[^>]+src=["\']([^"\']+)["\']', result.html or ""):
         abs_src = urljoin(url, src)
         if abs_src not in seen:
@@ -86,216 +111,399 @@ async def _scrape_page(url: str) -> dict:
     }
 
 
-def _download_images(image_urls: list, dest_dir: Path, base_url: str) -> dict:
+# ─────────────────────────────────────────────────────────────
+# PASSO 2: CSS externo → embed inline
+# ─────────────────────────────────────────────────────────────
+
+def _embed_css(html: str, base_url: str) -> str:
     """
-    Baixa imagens e salva em dest_dir.
-    Retorna mapa {url_original: nome_arquivo_local}.
+    Encontra <link rel="stylesheet" href="..."> e substitui pelo
+    conteúdo CSS inline em <style>...</style>.
     """
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    url_map = {}
-
-    SKIP_DOMAINS = {
-        "google-analytics.com", "googletagmanager.com", "doubleclick.net",
-        "facebook.com", "facebook.net", "fbcdn.net", "hotjar.com",
-        "clarity.ms", "tiktok.com", "segment.com", "mixpanel.com",
-    }
-
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Referer": base_url,
-    }
-
-    for i, img_url in enumerate(image_urls[:80]):  # máx 80 imagens
+    def fetch_and_embed(match):
+        href = match.group(1)
+        if href.startswith("data:"):
+            return match.group(0)
+        abs_href = urljoin(base_url, href)
         try:
-            parsed = urlparse(img_url)
-            if any(d in parsed.netloc for d in SKIP_DOMAINS):
-                continue
-            if not parsed.scheme.startswith("http"):
-                continue
-
-            resp = requests.get(img_url, headers=headers, timeout=15, stream=True)
-            if resp.status_code != 200:
-                continue
-
-            content_type = resp.headers.get("content-type", "image/jpeg")
-            if not content_type.startswith("image/"):
-                continue
-
-            ext_map = {
-                "image/jpeg": ".jpg", "image/png": ".png",
-                "image/gif": ".gif", "image/webp": ".webp",
-                "image/svg+xml": ".svg", "image/avif": ".avif",
-            }
-            ext = ext_map.get(content_type.split(";")[0].strip(), ".jpg")
-
-            # Nome do arquivo baseado no path original
-            orig_name = Path(parsed.path).stem[:40] or f"img_{i}"
-            filename = f"{orig_name}{ext}"
-            # Evita colisão
-            counter = 1
-            while (dest_dir / filename).exists():
-                filename = f"{orig_name}_{counter}{ext}"
-                counter += 1
-
-            (dest_dir / filename).write_bytes(resp.content)
-            url_map[img_url] = filename
-
+            resp = requests.get(abs_href, headers=HEADERS, timeout=10)
+            if resp.status_code == 200 and "text/css" in resp.headers.get("content-type", ""):
+                css_content = resp.text
+                # Corrige URLs relativas dentro do CSS
+                css_content = re.sub(
+                    r'url\(["\']?(?!data:|http|//)([^)"\']+)["\']?\)',
+                    lambda m: f'url({urljoin(abs_href, m.group(1))})',
+                    css_content
+                )
+                return f"<style>\n{css_content}\n</style>"
         except Exception:
-            continue
+            pass
+        return match.group(0)  # fallback: mantém o link original
 
-    return url_map
-
-
-def _rewrite_image_urls(html: str, url_map: dict) -> str:
-    """Substitui URLs absolutas de imagens por caminhos relativos images/."""
-    for orig_url, local_name in url_map.items():
-        html = html.replace(orig_url, f"images/{local_name}")
+    html = re.sub(
+        r'<link[^>]+rel=["\']stylesheet["\'][^>]+href=["\']([^"\']+)["\'][^>]*>',
+        fetch_and_embed,
+        html,
+        flags=re.IGNORECASE,
+    )
+    # Também tenta o formato com href antes de rel
+    html = re.sub(
+        r'<link[^>]+href=["\']([^"\']+)["\'][^>]+rel=["\']stylesheet["\'][^>]*>',
+        fetch_and_embed,
+        html,
+        flags=re.IGNORECASE,
+    )
     return html
 
 
-def _call_claude_to_build_page(html: str, screenshot_b64: str, url: str, page_type: str) -> str:
-    """
-    Envia HTML + screenshot para Claude gerar página no template Relívia.
-    Retorna HTML gerado.
-    """
-    import anthropic
+# ─────────────────────────────────────────────────────────────
+# PASSO 3: Imagens — 3 estratégias
+# ─────────────────────────────────────────────────────────────
 
+def _make_absolute_urls(html: str, base_url: str) -> str:
+    """
+    Estratégia A: converte todas as URLs relativas de imagens para absolutas.
+    Ex: /images/foto.jpg → https://site.com/images/foto.jpg
+    """
+    def fix_src(match):
+        prefix = match.group(1)  # src=" ou src='
+        src = match.group(2)
+        quote = match.group(3)
+        if src.startswith("data:") or src.startswith("http"):
+            return f"{prefix}{src}{quote}"
+        abs_src = urljoin(base_url, src)
+        return f"{prefix}{abs_src}{quote}"
+
+    # src="..." e src='...'
+    html = re.sub(r'(src=["\'])([^"\']+)(["\'])', fix_src, html)
+    # srcset
+    def fix_srcset(match):
+        srcset = match.group(2)
+        parts = []
+        for part in srcset.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            tokens = part.split()
+            if tokens and not tokens[0].startswith("http") and not tokens[0].startswith("data:"):
+                tokens[0] = urljoin(base_url, tokens[0])
+            parts.append(" ".join(tokens))
+        return match.group(1) + ", ".join(parts) + match.group(3)
+
+    html = re.sub(r'(srcset=["\'])([^"\']+)(["\'])', fix_srcset, html)
+    return html
+
+
+def _is_hotlink_blocked(img_url: str, base_url: str) -> bool:
+    """
+    Estratégia B: testa se a imagem bloqueia quando carregada de outro domínio.
+    Faz um HEAD com Referer diferente do original.
+    """
+    try:
+        parsed_base = urlparse(base_url)
+        fake_referer = f"https://meusite.com.br/"
+        resp = requests.head(
+            img_url,
+            headers={**HEADERS, "Referer": fake_referer},
+            timeout=8,
+            allow_redirects=True,
+        )
+        # 403 ou 401 = hotlink bloqueado
+        return resp.status_code in (401, 403)
+    except Exception:
+        return False
+
+
+def _img_to_base64(img_url: str, base_url: str) -> str | None:
+    """
+    Estratégia C: baixa a imagem com Referer correto e converte para base64 inline.
+    Retorna string data:image/...;base64,... ou None se falhar.
+    """
+    try:
+        resp = requests.get(
+            img_url,
+            headers={**HEADERS, "Referer": base_url},
+            timeout=15,
+            stream=True,
+        )
+        if resp.status_code != 200:
+            return None
+
+        content_type = resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
+        if not content_type.startswith("image/"):
+            content_type = "image/jpeg"
+
+        img_bytes = resp.content
+        b64 = base64.b64encode(img_bytes).decode("utf-8")
+        return f"data:{content_type};base64,{b64}"
+    except Exception:
+        return None
+
+
+def _resolve_images(html: str, base_url: str, progress_cb=None) -> str:
+    """
+    Aplica as 3 estratégias de imagem em sequência:
+    A → URLs relativas para absolutas (sempre)
+    B → Detecta hotlink
+    C → Converte bloqueadas para base64
+    """
+    # A: absolutas
+    html = _make_absolute_urls(html, base_url)
+
+    # Encontra todas as imagens absolutas no HTML
+    img_urls = list(set(re.findall(r'src=["\']+(https?://[^"\']+)["\']', html)))
+
+    total = len(img_urls)
+    convertidos = 0
+
+    for i, img_url in enumerate(img_urls):
+        # Pula domínios de tracking
+        parsed = urlparse(img_url)
+        if any(d in parsed.netloc for d in SKIP_DOMAINS):
+            continue
+        # Pula SVG e data URIs
+        if img_url.endswith(".svg") or img_url.startswith("data:"):
+            continue
+
+        # B: testa hotlink
+        if _is_hotlink_blocked(img_url, base_url):
+            # C: converte para base64
+            b64_src = _img_to_base64(img_url, base_url)
+            if b64_src:
+                html = html.replace(img_url, b64_src)
+                convertidos += 1
+
+        if progress_cb and i % 5 == 0:
+            progress_cb(f"Processando imagens... {i+1}/{total}")
+
+    return html
+
+
+# ─────────────────────────────────────────────────────────────
+# PASSO 4: Substituições cirúrgicas (produto, marca, links, pixel)
+# ─────────────────────────────────────────────────────────────
+
+def _apply_substitutions(html: str, subs: dict) -> str:
+    """
+    Aplica substituições apenas em nós de texto — não toca em atributos
+    HTML, CSS, classes, IDs ou scripts (exceto pixel).
+
+    subs = {
+        "produto_original": "Meu Produto",
+        "marca_original": "Minha Marca",
+        "link_cta": "https://meusite.com/comprar",
+        "pixel_id": "123456789",
+        "preco_original": "R$197",
+        "preco_novo": "R$97",
+        "medico_original": "Dr. James",
+        "medico_novo": "Dr. Carlos",
+    }
+    """
+    # Troca produto e marca (case-insensitive, em textos visíveis)
+    for key in ["produto_original", "marca_original", "medico_original"]:
+        novo_key = key.replace("_original", "_novo")
+        if subs.get(key) and subs.get(novo_key):
+            old = subs[key]
+            new = subs[novo_key]
+            # Substitui variações de case
+            html = html.replace(old, new)
+            html = html.replace(old.upper(), new.upper())
+            html = html.replace(old.title(), new.title())
+
+    # Troca links dos botões CTA
+    if subs.get("link_cta"):
+        # Encontra todos os hrefs de botões/links CTA
+        # Heurística: links com texto contendo palavras de compra
+        cta_keywords = r'(comprar|buy|order|get|purchase|checkout|garantir|quero|claim|shop)'
+
+        def replace_cta_href(match):
+            full_tag = match.group(0)
+            if re.search(cta_keywords, full_tag, re.IGNORECASE):
+                return re.sub(r'href=["\'][^"\']+["\']', f'href="{subs["link_cta"]}"', full_tag)
+            return full_tag
+
+        html = re.sub(r'<a[^>]+href=["\'][^"\']+["\'][^>]*>', replace_cta_href, html, flags=re.IGNORECASE)
+
+        # Também botões com onclick
+        html = re.sub(
+            r"(window\.location(?:\.href)?\s*=\s*['\"])[^'\"]+(['\"])",
+            lambda m: m.group(1) + subs["link_cta"] + m.group(2),
+            html
+        )
+
+    # Troca Pixel Meta
+    if subs.get("pixel_id"):
+        html = re.sub(
+            r"fbq\('init',\s*['\"](\d+)['\"]",
+            f"fbq('init', '{subs['pixel_id']}'",
+            html
+        )
+        html = re.sub(
+            r"(\"pixel_id\"\s*:\s*\")(\d+)(\")",
+            lambda m: m.group(1) + subs["pixel_id"] + m.group(3),
+            html
+        )
+
+    # Troca preços
+    if subs.get("preco_original") and subs.get("preco_novo"):
+        html = html.replace(subs["preco_original"], subs["preco_novo"])
+
+    # Remove scripts de analytics do concorrente (mantém Meta Pixel)
+    html = re.sub(
+        r'<script[^>]*>(.*?google-analytics.*?|.*?gtag\(.*?|.*?hotjar.*?|.*?clarity.*?)</script>',
+        '',
+        html,
+        flags=re.DOTALL | re.IGNORECASE
+    )
+
+    return html
+
+
+# ─────────────────────────────────────────────────────────────
+# PASSO 5: Tradução via Claude (só textos, não toca em HTML/CSS)
+# ─────────────────────────────────────────────────────────────
+
+def _translate_to_ptbr(html: str, url: str) -> str:
+    """
+    Usa Claude para traduzir os textos visíveis para PT-BR.
+    Instrução explícita: não alterar HTML, CSS, atributos, scripts.
+    Só traduz nós de texto.
+    """
     api_key = os.environ.get("CLAUDE_API_KEY", "")
     if not api_key:
-        # Sem Claude API: retorna HTML original limpo
         return html
 
+    import anthropic
     client = anthropic.Anthropic(api_key=api_key)
 
-    type_label = "advertorial" if page_type == "advertorial" else "landing page de produto"
+    # Trunca HTML para não estourar contexto
+    html_input = html[:40000] if len(html) > 40000 else html
 
-    messages_content = []
+    prompt = f"""Você receberá o HTML de uma landing page em inglês (ou outro idioma).
 
-    # Screenshot como imagem (se disponível)
-    if screenshot_b64:
-        messages_content.append({
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": "image/png",
-                "data": screenshot_b64,
-            }
-        })
+Sua tarefa: traduzir APENAS os textos visíveis para Português Brasileiro natural e persuasivo.
 
-    # HTML truncado
-    html_truncado = html[:15000] if len(html) > 15000 else html
+REGRAS ABSOLUTAS — NUNCA violar:
+- NÃO alterar nenhuma tag HTML (<div>, <span>, <p>, etc.)
+- NÃO alterar atributos HTML (class, id, style, data-*, href, src)
+- NÃO alterar nenhuma linha de CSS
+- NÃO alterar scripts JavaScript
+- NÃO alterar URLs de imagens
+- NÃO alterar nomes de arquivos
+- APENAS traduzir o texto dentro dos nós: entre > e <
 
-    messages_content.append({
-        "type": "text",
-        "text": f"""Você é um especialista em landing pages de alta conversão.
+Adaptações obrigatórias ao traduzir:
+- FDA → ANVISA
+- USD/$ → R$ (Reais)
+- Cidades americanas → cidades brasileiras (São Paulo, Rio, Curitiba, etc.)
+- "Medicare", "insurance" → "plano de saúde"
+- Datas → formato brasileiro (DD de mês de AAAA)
+- Manter tom persuasivo e emocional do original
 
-Analise esta {type_label} e recrie ela em HTML completo e limpo.
+Retorne APENAS o HTML com os textos traduzidos. Sem explicações. Sem markdown.
 
-URL original: {url}
-
-HTML original (pode estar incompleto):
-```html
-{html_truncado}
-```
-
-Instruções:
-1. Mantenha toda a estrutura de seções, textos e argumentos de venda
-2. Use CSS inline ou <style> para manter o visual similar
-3. Substitua logotipos/marcas por "Relívia"
-4. Mantenha as imagens referenciadas como images/nome-do-arquivo.ext
-5. Retorne APENAS o HTML completo, sem explicações
-6. O HTML deve ser auto-contido (sem CDN externo exceto fontes Google)
-7. Botões de CTA devem ter cor #2E2BFF (azul Relívia)
-
-Retorne somente o código HTML."""
-    })
+HTML:
+{html_input}"""
 
     response = client.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=8000,
-        messages=[{"role": "user", "content": messages_content}]
+        messages=[{"role": "user", "content": prompt}]
     )
 
-    generated = response.content[0].text.strip()
+    translated = response.content[0].text.strip()
 
-    # Extrai HTML se vier com markdown
-    if "```html" in generated:
-        generated = generated.split("```html")[1].split("```")[0].strip()
-    elif "```" in generated:
-        generated = generated.split("```")[1].split("```")[0].strip()
+    # Remove markdown se vier com ```
+    if "```html" in translated:
+        translated = translated.split("```html")[1].split("```")[0].strip()
+    elif "```" in translated:
+        translated = translated.split("```")[1].split("```")[0].strip()
 
-    return generated
+    return translated
 
+
+# ─────────────────────────────────────────────────────────────
+# TASK PRINCIPAL
+# ─────────────────────────────────────────────────────────────
 
 @celery.task(bind=True, name="worker.tasks.run_clone")
 def run_clone(self, job_id: str, url: str, page_type: str, nome_pasta: str):
     """
-    Clona uma landing page usando Crawl4AI + Claude.
-    Sem dependência de scripts locais ou Chrome instalado pelo usuário.
+    Clona uma landing page — clonar igual, não recriar.
+
+    Fluxo:
+    1. Crawl4AI captura HTML completo
+    2. CSS externo → embed inline
+    3. Imagens: relativas→absolutas, hotlink→base64
+    4. Substituições cirúrgicas (produto, marca, links, pixel)
+    5. Tradução PT-BR via Claude (só textos)
+    6. Salva index.html autossuficiente
     """
     runs_base = Path(os.environ.get("AGENTE_CLONE_RUNS_BASE", "/app/runs"))
     job_dir = runs_base / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
 
     try:
+        # ── 1. Scraping ──────────────────────────────────────
         _update_job(job_id, status="running", progress_msg="Abrindo a página com Crawl4AI...")
-
-        # 1. Scraping com Crawl4AI
         scraped = asyncio.run(_scrape_page(url))
-        html_original = scraped["html"]
-        screenshot_b64 = scraped["screenshot_b64"]
-        image_urls = scraped["image_urls"]
+        html = scraped["html"]
 
-        _update_job(job_id, progress_msg=f"Página capturada. Baixando {len(image_urls)} imagens...")
+        if not html:
+            raise RuntimeError("HTML capturado está vazio")
 
-        # 2. Baixa imagens
-        images_dir = job_dir / "images"
-        url_map = _download_images(image_urls, images_dir, url)
-
-        _update_job(job_id, progress_msg=f"{len(url_map)} imagens baixadas. Gerando HTML com Claude...")
-
-        # 3. Salva screenshot
-        if screenshot_b64:
+        # Salva screenshot
+        if scraped["screenshot_b64"]:
             try:
-                (job_dir / "screenshot.png").write_bytes(base64.b64decode(screenshot_b64))
+                (job_dir / "screenshot.png").write_bytes(
+                    base64.b64decode(scraped["screenshot_b64"])
+                )
             except Exception:
                 pass
 
-        # 4. Claude reconstrói a página no template Relívia
-        html_gerado = _call_claude_to_build_page(html_original, screenshot_b64, url, page_type)
+        # ── 2. CSS externo → inline ──────────────────────────
+        _update_job(job_id, progress_msg="Incorporando CSS externo...")
+        html = _embed_css(html, url)
 
-        # 5. Reescreve URLs de imagens para relativo
-        html_final = _rewrite_image_urls(html_gerado, url_map)
+        # ── 3. Imagens ───────────────────────────────────────
+        _update_job(job_id, progress_msg="Processando imagens...")
 
-        # 6. Injeta CSS Relívia para advertorial
-        if page_type == "advertorial":
-            html_final = _inject_adv_css_inline(html_final, job_dir)
+        def img_progress(msg):
+            _update_job(job_id, progress_msg=msg)
 
-        # 7. Salva index.html
+        html = _resolve_images(html, url, progress_cb=img_progress)
+
+        # ── 4. Substituições ─────────────────────────────────
+        _update_job(job_id, progress_msg="Aplicando substituições...")
+
+        # Lê substituições salvas no job (se houver)
+        subs_path = job_dir / "substitutions.json"
+        subs = {}
+        if subs_path.exists():
+            try:
+                subs = json.loads(subs_path.read_text())
+            except Exception:
+                pass
+
+        if subs:
+            html = _apply_substitutions(html, subs)
+
+        # ── 5. Tradução PT-BR ────────────────────────────────
+        _update_job(job_id, progress_msg="Traduzindo para PT-BR...")
+        html = _translate_to_ptbr(html, url)
+
+        # ── 6. Salva ─────────────────────────────────────────
         dest_html = job_dir / "index.html"
-        dest_html.write_text(html_final, encoding="utf-8")
-
-        n_images = len(list(images_dir.glob("*"))) if images_dir.exists() else 0
+        dest_html.write_text(html, encoding="utf-8")
 
         _update_job(
             job_id,
             status="done",
-            progress_msg=f"Concluído — {n_images} imagens baixadas",
+            progress_msg="Clonagem concluída",
             out_dir=str(job_dir),
             html_path=str(dest_html),
-            images_count=n_images,
+            images_count=0,
         )
 
     except Exception as e:
         _update_job(job_id, status="error", error_msg=str(e)[:1000])
-
-
-def _inject_adv_css_inline(html: str, job_dir: Path) -> str:
-    """Injeta CSS do template advertorial Relívia no <head>."""
-    css_path = Path(__file__).parent.parent / "app" / "static" / "css" / "relivia-advertorial.css"
-    if not css_path.exists():
-        return html
-    if "<style>" in html[:2000]:
-        return html
-    css = css_path.read_text(encoding="utf-8")
-    return html.replace("</head>", f"<style>\n{css}\n</style>\n</head>", 1)
