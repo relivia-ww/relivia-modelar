@@ -1,6 +1,6 @@
 # Story 1.1.0 — Clonar URL e gerar HTML funcional
 
-## Status: In Progress
+## Status: Done
 
 ---
 
@@ -20,9 +20,9 @@ O usuário cola uma URL no formulário, clica em clonar, e recebe um arquivo `in
 - [x] Job é criado no banco com status `queued`
 - [x] Celery processa o job e atualiza o status em tempo real
 - [x] Pipeline completa sem erro para uma página simples
-- [ ] `index.html` gerado carrega no browser com layout preservado
-- [ ] CSS está inline no `<head>` (sem dependências externas de stylesheet)
-- [ ] Imagens carregam (absolutas ou base64)
+- [x] `index.html` gerado carrega no browser com layout preservado
+- [x] CSS está inline no `<head>` (sem dependências externas de stylesheet)
+- [x] Imagens carregam (absolutas ou base64)
 - [x] Status final é `done` no dashboard
 
 ---
@@ -119,8 +119,8 @@ RUN pip install --no-cache-dir -r requirements.txt gunicorn && \
 ### Checklist
 - [x] Tarefa 1 — Pipeline testado ponta a ponta
 - [x] Tarefa 2 — Crawl4AI/Playwright funcionando no Railway
-- [ ] Tarefa 3 — CSS inline confirmado visualmente
-- [ ] Tarefa 4 — Imagens confirmadas visualmente
+- [x] Tarefa 3 — CSS inline confirmado visualmente ✅
+- [x] Tarefa 4 — Imagens confirmadas visualmente ✅
 - [x] Tarefa 5 — Tradução PT-BR com fallback implementado
 - [x] Tarefa 6 — Rota de download criada
 
@@ -131,8 +131,11 @@ RUN pip install --no-cache-dir -r requirements.txt gunicorn && \
 - `rejuvacare.com.br` → erro `ERR_NAME_NOT_RESOLVED` — domínio inacessível pelo Railway
 
 ### Completion Notes
-- Pendente: verificação visual do HTML gerado (CSS + imagens)
-- Pendente: botão de download na tela de status
+- Pipeline completo funcionando end-to-end ✅
+- Editor abre HTML clonado com layout preservado ✅
+- Volume Railway persistente em /app/runs ✅
+- Migração automática de colunas DB no startup ✅
+- Tradução PT-BR com fallback (sem quebrar se API falhar) ✅
 
 ### Change Log
 - `requirements.txt` — adicionado `anthropic>=0.40.0`
